@@ -216,12 +216,11 @@ class MediaCodecVideoEngine(
         val totalFrames = estimateFrameCount(durationUs, fps)
         var lastPtsUs = 0L
 
-        // ✅ Create pipeline with frame buffering
         val pipeline = VideoPipeline(
             animeEngine = animeEngine,
             strength = strength,
             isEnhanceEnabled = isEnhanceEnabled,
-            bufferSize = 3
+            bufferSize = 4
         )
 
         val pipelineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
@@ -229,7 +228,6 @@ class MediaCodecVideoEngine(
 
         try {
             while (!encoderSink.isEndOfStream()) {
-                // === DECODE STAGE ===
                 if (!extractorDone) {
                     val inputIndex = decoder.dequeueInputBuffer(TIMEOUT_US)
                     if (inputIndex >= 0) {
@@ -250,7 +248,6 @@ class MediaCodecVideoEngine(
                     }
                 }
 
-                // === DECODE OUTPUT & FEED PIPELINE ===
                 var decoderOutputAvailable = true
                 while (decoderOutputAvailable) {
                     val outputIndex = decoder.dequeueOutputBuffer(decoderInfo, 0)
@@ -270,7 +267,6 @@ class MediaCodecVideoEngine(
                                     try {
                                         val bitmap = YuvConverter.imageToBitmap(image)
 
-                                        // ✅ Feed frame to pipeline
                                         pipeline.offerDecodedFrame(
                                             bitmap = bitmap,
                                             pts = decoderInfo.presentationTimeUs,
@@ -293,7 +289,6 @@ class MediaCodecVideoEngine(
                     }
                 }
 
-                // === ENCODE STAGE: Poll processed frames from pipeline ===
                 val processedFrame = pipeline.pollProcessedFrame()
                 if (processedFrame != null) {
                     val yuv = YuvConverter.bitmapToNv12(processedFrame.bitmap)
@@ -307,7 +302,7 @@ class MediaCodecVideoEngine(
 
                     encoderSink.queueFrame(data = yuv, pts = currentPts)
 
-                    if (!processedFrame.wasSkipped && !processedFrame.bitmap.isRecycled) {
+                    if (!processedFrame.bitmap.isRecycled) {
                         processedFrame.bitmap.recycle()
                     }
 
@@ -338,32 +333,6 @@ class MediaCodecVideoEngine(
             pipelineScope.cancel()
             aiJob.cancel()
         }
-    }
-
-    private fun blendFramesInPlace(
-        originalBitmap: Bitmap,
-        animeBitmap: Bitmap,
-        strength: Float,
-        origBuffer: IntArray,
-        animeBuffer: IntArray
-    ): Bitmap {
-        val width = originalBitmap.width
-        val height = originalBitmap.height
-
-        if (strength >= 0.999f) return animeBitmap
-        if (strength <= 0.001f) return originalBitmap
-
-        val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = android.graphics.Canvas(result)
-
-        canvas.drawBitmap(originalBitmap, 0f, 0f, null)
-
-        val paint = android.graphics.Paint().apply {
-            alpha = (strength * 255).roundToInt().coerceIn(0, 255)
-        }
-        canvas.drawBitmap(animeBitmap, 0f, 0f, paint)
-
-        return result
     }
 
     private fun muxAudio(inputUri: Uri, processedVideo: File, outputFile: File) {
