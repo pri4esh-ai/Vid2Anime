@@ -88,15 +88,11 @@ jobs:
             echo "$NAME verified."
           }
 
+          # ✅ Only AnimeGANv3 is downloaded now. Real-ESRGAN removed.
           download_if_missing \
             "AnimeGANv3_Hayao_36.onnx" \
             "https://github.com/TachibanaYoshino/AnimeGANv3/releases/download/v1.1.0/AnimeGANv3_Hayao_36.onnx" \
             "95ba7b219073fd5b12f569bc38056ffd3019cf4caf15b1feb9f73d1286c9f69d"
-
-          download_if_missing \
-            "RealESR-AnimeVideo-v3_x4.onnx" \
-            "https://huggingface.co/tidus2102/Real-ESRGAN/resolve/main/RealESR-AnimeVideo-v3_x4.onnx" \
-            "00ece3ac21c43ee31459216b5174b2cea0c5325044c5142aeb840f4890e175ff"
 
       - name: Verify project
         shell: bash
