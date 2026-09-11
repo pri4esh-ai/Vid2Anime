@@ -19,7 +19,6 @@ class VideoPipeline(
 ) {
     companion object {
         private const val TAG = "VideoPipeline"
-        // ✅ Reduced from 100ms to 10ms for faster polling
         private const val FRAME_TIMEOUT_MS = 10L
     }
 
@@ -31,10 +30,7 @@ class VideoPipeline(
     private var identicalFrameCount: Int = 0
     private val SKIP_THRESHOLD = 2
 
-    // ✅ Pre-allocated buffer for hash computation
     private var hashPixels: IntArray = IntArray(0)
-
-    // ✅ Pre-allocated blend resources
     private var blendBitmap: Bitmap? = null
     private var blendCanvas: android.graphics.Canvas? = null
     private val blendPaint = android.graphics.Paint()
@@ -122,7 +118,6 @@ class VideoPipeline(
         Log.i(TAG, "Pipeline stop signal sent. Remaining: decode=${decodeQueue.size}, ai=${aiQueue.size}")
     }
 
-    // ✅ Optimized: Sleep only 2ms for fastest drain
     fun awaitCompletion(timeoutMs: Long = 10_000L) {
         val deadline = System.currentTimeMillis() + timeoutMs
 
@@ -137,7 +132,6 @@ class VideoPipeline(
         Log.w(TAG, "Pipeline drain timed out. decode=${decodeQueue.size}, ai=${aiQueue.size}")
     }
 
-    // ✅ Optimized: Bulk getPixels instead of 8000 individual getPixel calls
     private fun computeFrameHash(bitmap: Bitmap): Int {
         val width = bitmap.width
         val height = bitmap.height
@@ -150,7 +144,6 @@ class VideoPipeline(
             hashPixels = IntArray(sampleCount)
         }
 
-        // ONE bulk read instead of thousands of individual calls
         bitmap.getPixels(hashPixels, 0, sampleWidth, 0, 0, sampleWidth, sampleHeight)
 
         var hash = 0
@@ -171,7 +164,6 @@ class VideoPipeline(
         return false
     }
 
-    // ✅ Optimized: Reuse bitmap instead of creating new one every frame
     private fun blendFrames(original: Bitmap, anime: Bitmap): Bitmap {
         if (strength >= 0.999f) return anime
         if (strength <= 0.001f) return original
@@ -193,4 +185,4 @@ class VideoPipeline(
 
         return blendBitmap!!
     }
-}w
+}
