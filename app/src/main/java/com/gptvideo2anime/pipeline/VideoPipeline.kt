@@ -15,7 +15,7 @@ class VideoPipeline(
     private val animeEngine: OnnxAnimeEngine,
     private val strength: Float,
     private val isEnhanceEnabled: Boolean,
-    // ✅ Changed default from 3 to 4 for smoother parallel processing
+    // ✅ Default buffer size of 4
     private val bufferSize: Int = 4
 ) {
     companion object {
@@ -109,13 +109,13 @@ class VideoPipeline(
         return aiQueue.poll(FRAME_TIMEOUT_MS, TimeUnit.MILLISECONDS)
     }
 
-    // ✅ Added logging to track remaining frames when stopping
+    // ✅ FIXED: Changed size() to .size for Kotlin compatibility
     fun stop() {
         isRunning.set(false)
-        Log.i(TAG, "Pipeline stop signal sent. Remaining: decode=${decodeQueue.size()}, ai=${aiQueue.size()}")
+        Log.i(TAG, "Pipeline stop signal sent. Remaining: decode=${decodeQueue.size}, ai=${aiQueue.size}")
     }
 
-    // ✅ Optimized: Poll every 5ms instead of 50ms for faster end-of-stream drain
+    // ✅ FIXED: Changed size() to .size and polls every 5ms for fast drain
     fun awaitCompletion(timeoutMs: Long = 30_000L) {
         val deadline = System.currentTimeMillis() + timeoutMs
 
@@ -131,7 +131,7 @@ class VideoPipeline(
             Thread.sleep(5)
         }
 
-        Log.w(TAG, "Pipeline drain timed out. decode=${decodeQueue.size()}, ai=${aiQueue.size()}")
+        Log.w(TAG, "Pipeline drain timed out. decode=${decodeQueue.size}, ai=${aiQueue.size}")
     }
 
     private fun computeFrameHash(bitmap: Bitmap): Int {
