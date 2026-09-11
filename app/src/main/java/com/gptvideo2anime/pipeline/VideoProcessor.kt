@@ -30,11 +30,9 @@ class VideoProcessor(
         isEnhanceEnabled: Boolean,
         onProgress: (Int, Int, String) -> Unit
     ): ProcessResult = withContext(Dispatchers.IO) {
-        // Validate URI and retrieve metadata
         val videoInfo = codecEngine.inspect(uri)
         Log.i(TAG, "Processing video: ${videoInfo.width}x${videoInfo.height}, FPS: ${videoInfo.frameRate}")
 
-        // Ensure model file is accessible
         val modelPath = modelManager.animeModelPath()
             ?: throw IllegalStateException("AnimeGAN model missing from local storage.")
 
@@ -43,7 +41,6 @@ class VideoProcessor(
             "AnimeGAN model file is invalid or empty at $modelPath"
         }
 
-        // Output directory setup
         val outputDir = File(context.filesDir, "output").apply { mkdirs() }
         cleanOldOutputs(outputDir)
 
@@ -54,11 +51,11 @@ class VideoProcessor(
 
         val normalizedStrength = (strength.coerceIn(0, 100)) / 100f
 
-        // ✅ Shifted to 384 for faster mobile processing
+        // ✅ Shifted to 256 for maximum mobile speed
         OnnxAnimeEngine(
             modelPath = modelPath,
-            modelWidth = 384,
-            modelHeight = 384
+            modelWidth = 256,
+            modelHeight = 256
         ).use { engine ->
             codecEngine.processVideo(
                 inputUri = uri,
