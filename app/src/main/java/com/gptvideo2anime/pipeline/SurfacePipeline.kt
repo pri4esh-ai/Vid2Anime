@@ -18,7 +18,8 @@ class SurfacePipeline(
 ) : AutoCloseable {
 
     companion object {
-        private const val MODEL_SIZE = 512
+        // ✅ Changed from 512 to 384 for faster mobile processing
+        private const val MODEL_SIZE = 384
         private const val QUEUE_CAPACITY = 2
     }
 
