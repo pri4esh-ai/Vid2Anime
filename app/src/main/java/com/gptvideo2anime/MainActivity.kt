@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity() {
                 uiState = uiState,
                 onVideoSelected = viewModel::onVideoSelected,
                 onStrengthChanged = viewModel::onStrengthChanged,
+                onEnhanceToggleChanged = viewModel::onEnhanceToggleChanged, // 👈 NEW
                 onProcessClick = viewModel::processVideo,
                 onResetClick = viewModel::resetState
             )
@@ -74,6 +75,7 @@ private fun Video2AnimeApp(
     uiState: UiState,
     onVideoSelected: (Uri?) -> Unit,
     onStrengthChanged: (Int) -> Unit,
+    onEnhanceToggleChanged: (Boolean) -> Unit, // 👈 NEW
     onProcessClick: () -> Unit,
     onResetClick: () -> Unit
 ) {
@@ -118,6 +120,13 @@ private fun Video2AnimeApp(
                     onStrengthChanged = onStrengthChanged
                 )
 
+                // 👇 NEW TOGGLE CARD
+                EnhanceToggleCard(
+                    isEnabled = uiState.isEnhanceEnabled,
+                    enabled = !uiState.isProcessing,
+                    onToggleChanged = onEnhanceToggleChanged
+                )
+
                 AnimatedVisibility(visible = uiState.isProcessing) {
                     ProgressCard(
                         progress = uiState.progress,
@@ -154,6 +163,50 @@ private fun Video2AnimeApp(
                 }
             }
         }
+    }
+}
+
+// 👇 NEW COMPOSABLE
+@Composable
+private fun EnhanceToggleCard(
+    isEnabled: Boolean,
+    enabled: Boolean,
+    onToggleChanged: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(Card)
+            .padding(18.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "AI UPSCALE (ENHANCE)",
+                color = White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = if (isEnabled) "High quality output (Slower)" else "Fast output (Standard quality)",
+                color = Muted,
+                fontSize = 11.sp
+            )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Switch(
+            checked = isEnabled,
+            onCheckedChange = onToggleChanged,
+            enabled = enabled,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Accent,
+                checkedTrackColor = Accent.copy(alpha = 0.4f),
+                uncheckedThumbColor = Muted,
+                uncheckedTrackColor = CardLight
+            )
+        )
     }
 }
 
