@@ -12,6 +12,10 @@ import android.net.Uri
 import android.os.Build
 import android.util.Log
 import com.gptvideo2anime.inference.OnnxAnimeEngine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import java.io.File
 import java.nio.ByteBuffer
 import kotlin.math.max
@@ -208,143 +212,134 @@ class MediaCodecVideoEngine(
         var decoderDone = false
         var encoderInputEnded = false
         var processedFrames = 0
+        var frameIndex = 0
         val totalFrames = estimateFrameCount(durationUs, fps)
-
-        val pixelCount = sourceWidth * sourceHeight
-        val origBuffer = IntArray(pixelCount)
-        val animeBuffer = IntArray(pixelCount)
         var lastPtsUs = 0L
 
-        while (!encoderSink.isEndOfStream()) {
-            if (!extractorDone) {
-                val inputIndex = decoder.dequeueInputBuffer(TIMEOUT_US)
-                if (inputIndex >= 0) {
-                    val inputBuffer = decoder.getInputBuffer(inputIndex)
-                        ?: throw IllegalStateException("Decoder input buffer unavailable.")
-                    inputBuffer.clear()
+        // ✅ Create pipeline with frame buffering
+        val pipeline = VideoPipeline(
+            animeEngine = animeEngine,
+            strength = strength,
+            isEnhanceEnabled = isEnhanceEnabled,
+            bufferSize = 3
+        )
 
-                    val sampleSize = extractor.readSampleData(inputBuffer, 0)
-                    if (sampleSize < 0) {
-                        decoder.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                        extractorDone = true
-                    } else {
-                        val sampleTime = extractor.sampleTime.coerceAtLeast(0L)
-                        val sampleFlags = extractor.sampleFlags
-                        decoder.queueInputBuffer(inputIndex, 0, sampleSize, sampleTime, sampleFlags)
-                        extractor.advance()
+        val pipelineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        val aiJob = pipeline.startAiStage(pipelineScope)
+
+        try {
+            while (!encoderSink.isEndOfStream()) {
+                // === DECODE STAGE ===
+                if (!extractorDone) {
+                    val inputIndex = decoder.dequeueInputBuffer(TIMEOUT_US)
+                    if (inputIndex >= 0) {
+                        val inputBuffer = decoder.getInputBuffer(inputIndex)
+                            ?: throw IllegalStateException("Decoder input buffer unavailable.")
+                        inputBuffer.clear()
+
+                        val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                        if (sampleSize < 0) {
+                            decoder.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            extractorDone = true
+                        } else {
+                            val sampleTime = extractor.sampleTime.coerceAtLeast(0L)
+                            val sampleFlags = extractor.sampleFlags
+                            decoder.queueInputBuffer(inputIndex, 0, sampleSize, sampleTime, sampleFlags)
+                            extractor.advance()
+                        }
                     }
                 }
-            }
 
-            var decoderOutputAvailable = true
-            while (decoderOutputAvailable) {
-                val outputIndex = decoder.dequeueOutputBuffer(decoderInfo, 0)
-                when {
-                    outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
-                        decoderOutputAvailable = false
-                    }
-                    outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        Log.i(TAG, "Decoder output format changed: ${decoder.outputFormat}")
-                    }
-                    outputIndex >= 0 -> {
-                        val decoderEos = (decoderInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-
-                        if (decoderInfo.size > 0) {
-                            val image = decoder.getOutputImage(outputIndex)
-                            if (image != null) {
-                                try {
-                                    val originalBitmap = YuvConverter.imageToBitmap(image)
-
-                                    val frameBitmap = if (originalBitmap.width == sourceWidth && originalBitmap.height == sourceHeight) {
-                                        originalBitmap
-                                    } else {
-                                        Bitmap.createScaledBitmap(originalBitmap, sourceWidth, sourceHeight, true)
-                                    }
-
-                                    // 1. Run Hayao Anime Style Transfer
-                                    val animeBitmap = animeEngine.processFrame(frameBitmap)
-
-                                    // 2. Blend Original and Anime frames (Hardware Accelerated)
-                                    val blendedBitmap = blendFramesInPlace(
-                                        originalBitmap = frameBitmap,
-                                        animeBitmap = animeBitmap,
-                                        strength = strength,
-                                        origBuffer = origBuffer,
-                                        animeBuffer = animeBuffer
-                                    )
-
-                                    // 3. Conditionally run Super Resolution based on the toggle
-                                    val finalOutputBitmap = if (isEnhanceEnabled) {
-                                        Log.d(TAG, "Enhance mode active. Ready for SR injection.")
-                                        blendedBitmap 
-                                    } else {
-                                        blendedBitmap
-                                    }
-
-                                    val yuv = YuvConverter.bitmapToNv12(finalOutputBitmap)
-
-                                    val currentPts = if (decoderInfo.presentationTimeUs > lastPtsUs) {
-                                        decoderInfo.presentationTimeUs
-                                    } else {
-                                        lastPtsUs + (1_000_000L / fps)
-                                    }
-                                    lastPtsUs = currentPts
-
-                                    encoderSink.queueFrame(data = yuv, pts = currentPts)
-
-                                    if (finalOutputBitmap !== blendedBitmap && finalOutputBitmap !== frameBitmap && finalOutputBitmap !== originalBitmap && !finalOutputBitmap.isRecycled) {
-                                        finalOutputBitmap.recycle()
-                                    }
-                                    if (blendedBitmap !== frameBitmap && blendedBitmap !== originalBitmap && !blendedBitmap.isRecycled) {
-                                        blendedBitmap.recycle()
-                                    }
-                                    if (frameBitmap !== originalBitmap && !frameBitmap.isRecycled) {
-                                        frameBitmap.recycle()
-                                    }
-                                    if (!originalBitmap.isRecycled) {
-                                        originalBitmap.recycle()
-                                    }
-                                    if (!animeBitmap.isRecycled) {
-                                        animeBitmap.recycle()
-                                    }
-
-                                    processedFrames++
-                                    val progress = if (totalFrames > 0) {
-                                        ((processedFrames.toFloat() / totalFrames.toFloat()) * 100f).roundToInt().coerceIn(0, 99)
-                                    } else 0
-
-                                    onProgress(progress, 100, "Encoding frame $processedFrames...")
-                                } finally {
-                                    runCatching { image.close() }
-                                }
-                            }
-                        }
-
-                        decoder.releaseOutputBuffer(outputIndex, false)
-
-                        if (decoderEos) {
-                            decoderDone = true
-                            extractorDone = true
+                // === DECODE OUTPUT & FEED PIPELINE ===
+                var decoderOutputAvailable = true
+                while (decoderOutputAvailable) {
+                    val outputIndex = decoder.dequeueOutputBuffer(decoderInfo, 0)
+                    when {
+                        outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
                             decoderOutputAvailable = false
                         }
+                        outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            Log.i(TAG, "Decoder output format changed: ${decoder.outputFormat}")
+                        }
+                        outputIndex >= 0 -> {
+                            val decoderEos = (decoderInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+
+                            if (decoderInfo.size > 0) {
+                                val image = decoder.getOutputImage(outputIndex)
+                                if (image != null) {
+                                    try {
+                                        val bitmap = YuvConverter.imageToBitmap(image)
+
+                                        // ✅ Feed frame to pipeline
+                                        pipeline.offerDecodedFrame(
+                                            bitmap = bitmap,
+                                            pts = decoderInfo.presentationTimeUs,
+                                            frameIndex = frameIndex++
+                                        )
+                                    } finally {
+                                        runCatching { image.close() }
+                                    }
+                                }
+                            }
+
+                            decoder.releaseOutputBuffer(outputIndex, false)
+
+                            if (decoderEos) {
+                                decoderDone = true
+                                extractorDone = true
+                                decoderOutputAvailable = false
+                            }
+                        }
                     }
                 }
-            }
 
-            if (decoderDone && !encoderInputEnded) {
-                encoderSink.signalEndOfInput()
-                encoderInputEnded = true
-            }
+                // === ENCODE STAGE: Poll processed frames from pipeline ===
+                val processedFrame = pipeline.pollProcessedFrame()
+                if (processedFrame != null) {
+                    val yuv = YuvConverter.bitmapToNv12(processedFrame.bitmap)
 
-            encoderSink.drain(0L)
+                    val currentPts = if (processedFrame.presentationTimeUs > lastPtsUs) {
+                        processedFrame.presentationTimeUs
+                    } else {
+                        lastPtsUs + (1_000_000L / fps)
+                    }
+                    lastPtsUs = currentPts
 
-            if (decoderDone && encoderInputEnded) {
-                encoderSink.drain(TIMEOUT_US)
+                    encoderSink.queueFrame(data = yuv, pts = currentPts)
+
+                    if (!processedFrame.wasSkipped && !processedFrame.bitmap.isRecycled) {
+                        processedFrame.bitmap.recycle()
+                    }
+
+                    processedFrames++
+                    val progress = if (totalFrames > 0) {
+                        ((processedFrames.toFloat() / totalFrames.toFloat()) * 100f).roundToInt().coerceIn(0, 99)
+                    } else 0
+
+                    onProgress(progress, 100, "Encoding frame $processedFrames...")
+                }
+
+                if (decoderDone && !encoderInputEnded) {
+                    pipeline.stop()
+                    pipeline.awaitCompletion()
+
+                    encoderSink.signalEndOfInput()
+                    encoderInputEnded = true
+                }
+
+                encoderSink.drain(0L)
+
+                if (decoderDone && encoderInputEnded) {
+                    encoderSink.drain(TIMEOUT_US)
+                }
             }
+        } finally {
+            pipeline.stop()
+            pipelineScope.cancel()
+            aiJob.cancel()
         }
     }
 
-    // 👇 OPTIMIZED: Uses hardware-accelerated Canvas instead of slow Kotlin for-loop
     private fun blendFramesInPlace(
         originalBitmap: Bitmap,
         animeBitmap: Bitmap,
@@ -360,16 +355,14 @@ class MediaCodecVideoEngine(
 
         val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(result)
-        
-        // 1. Draw the original frame as the base layer
+
         canvas.drawBitmap(originalBitmap, 0f, 0f, null)
-        
-        // 2. Draw the anime frame on top with the specified alpha (strength)
+
         val paint = android.graphics.Paint().apply {
             alpha = (strength * 255).roundToInt().coerceIn(0, 255)
         }
         canvas.drawBitmap(animeBitmap, 0f, 0f, paint)
-        
+
         return result
     }
 
