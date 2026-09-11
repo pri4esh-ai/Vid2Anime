@@ -12,7 +12,7 @@ import kotlin.math.roundToInt
 
 class OnnxAnimeEngine(
     private val modelPath: String,
-    private val modelWidth: Int = 512, // Try changing to 384 or 256 later if it's too slow
+    private val modelWidth: Int = 512,
     private val modelHeight: Int = 512
 ) : Closeable {
 
@@ -22,13 +22,12 @@ class OnnxAnimeEngine(
     }
 
     private val environment: OrtEnvironment = OrtEnvironment.getEnvironment()
-    
+
     private val sessionOptions = OrtSession.SessionOptions().apply {
         setIntraOpNumThreads(4)
         setInterOpNumThreads(1)
         setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-        
-        // Attempt NNAPI (Hardware/GPU Acceleration on Android) safely
+
         val nnapiResult = runCatching { addNnapi() }
         if (nnapiResult.isSuccess) {
             Log.i("OnnxAnimeEngine", "✅ NNAPI (Hardware Acceleration) ENABLED.")
@@ -43,7 +42,6 @@ class OnnxAnimeEngine(
     private val inputInfo: TensorInfo = session.inputInfo[inputName]?.info as TensorInfo
     private val inputLayout: Layout = detectLayout(inputInfo.shape, "input")
 
-    // 👇 DIAGNOSTIC INIT BLOCK: Tells us the model's exact required shape
     init {
         Log.i("OnnxAnimeEngine", "========================================")
         Log.i("OnnxAnimeEngine", "🔍 Model Input Name: $inputName")
@@ -56,11 +54,11 @@ class OnnxAnimeEngine(
     private val pixelBuffer: IntArray = IntArray(pixelCount)
     private val floatBuffer: FloatArray = FloatArray(pixelCount * 3)
 
-    @Synchronized
+    // ✅ REMOVED @Synchronized to allow parallel processing
     fun processFrame(frame: Bitmap): Bitmap {
         require(!frame.isRecycled) { "Input bitmap is recycled." }
-        
-        val startTime = System.currentTimeMillis() // ⏱️ START TIMER
+
+        val startTime = System.currentTimeMillis()
 
         val resized = if (frame.width == modelWidth && frame.height == modelHeight) {
             frame
@@ -108,14 +106,14 @@ class OnnxAnimeEngine(
                 Layout.NHWC -> longArrayOf(1L, modelHeight.toLong(), modelWidth.toLong(), 3L)
             }
 
-            OnnxTensor.createTensor(
-                environment,
-                FloatBuffer.wrap(floatBuffer),
-                shape
-            ).use { input ->
+            // ✅ Reuse FloatBuffer instead of creating new one
+            val inputBuffer = FloatBuffer.wrap(floatBuffer)
+            inputBuffer.rewind()
+
+            OnnxTensor.createTensor(environment, inputBuffer, shape).use { input ->
                 session.run(mapOf(inputName to input)).use { result ->
-                    
-                    val endTime = System.currentTimeMillis() // ⏱️ STOP TIMER
+
+                    val endTime = System.currentTimeMillis()
                     Log.d("OnnxAnimeEngine", "⚡ AI Inference took: ${endTime - startTime} ms")
 
                     require(result.size() > 0) { "AnimeGAN returned no output." }
@@ -296,7 +294,7 @@ class OnnxAnimeEngine(
         return when {
             channelFirst && !channelLast -> Layout.NCHW
             channelLast && !channelFirst -> Layout.NHWC
-            else -> Layout.NCHW // Default fallback for dynamic ONNX shapes
+            else -> Layout.NCHW
         }
     }
 
