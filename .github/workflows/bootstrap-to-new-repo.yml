@@ -1,20 +1,124 @@
-# 1. Setup and fetch the exact commit
-mkdir clean-code && cd clean-code
-git init
-git remote add old-repo https://github.com/pri4esh-ai/GPT-Video2Anime-Hayao.git
-git fetch old-repo 457729011f42cfc64e7948e5e979ca0b896ee947
-git checkout FETCH_HEAD
+name: Restore Known Good GPT-Video2Anime-Hayao
 
-# 2. Delete old Git history AND old GitHub workflows
-rm -rf .git
-rm -rf .github 
+on:
+  workflow_dispatch:
 
-# 3. Initialize fresh repo with ONLY the source code
-git init
-git add .
-git commit -m "Initial commit: Clean source code"
-git branch -M main
+permissions:
+  contents: write
 
-# 4. Push to your new empty repo
-git remote add origin https://github.com/pri4esh-ai/Vid2Anime.git
-git push -u origin main
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout destination repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Clone exact known-good commit
+        shell: bash
+        run: |
+          set -e
+
+          # UPDATED: Pointing to your specific Hayao repo
+          SOURCE_REPO="https://github.com/pri4esh-ai/GPT-Video2Anime-Hayao.git"
+          SOURCE_COMMIT="457729011f42cfc64e7948e5e979ca0b896ee947"
+
+          git clone "$SOURCE_REPO" /tmp/GPT-Video2Anime-Hayao
+
+          cd /tmp/GPT-Video2Anime-Hayao
+          git checkout "$SOURCE_COMMIT"
+
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+
+          echo "Known-good commit verified."
+
+      - name: Copy project files
+        shell: bash
+        run: |
+          set -e
+
+          # Clear out the new repo (except its own .git folder)
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name '.git' \
+            -exec rm -rf {} +
+
+          cd /tmp/GPT-Video2Anime-Hayao
+
+          # UPDATED: Excluding the entire .github folder so no old workflows are copied
+          tar \
+            --exclude='.git' \
+            --exclude='.github' \
+            -cf - . \
+            | tar -xf - -C "$GITHUB_WORKSPACE"
+
+          cd "$GITHUB_WORKSPACE"
+
+          echo "Project copied without Git metadata or workflow files."
+
+      - name: Verify Android project
+        shell: bash
+        run: |
+          set -e
+
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f gradle.properties
+          test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          test -f gradlew
+          test -d app
+          test -d gradle
+          test -d .git
+
+          echo "Android project verification PASSED."
+          echo "Destination .git preserved."
+
+      - name: Commit restored project
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          # UPDATED: Commit message reflects the new hash
+          git commit \
+            -m "Restore known-good GPT-Video2Anime-Hayao commit 4577290"
+
+      - name: Push restored project
+        shell: bash
+        run: |
+          set -e
+
+          git push origin HEAD:main
+
+          echo "========================================"
+          echo "RESTORE SUCCESSFUL"
+          echo "========================================"
+
+      - name: Final verification
+        shell: bash
+        run: |
+          set -e
+
+          echo "Final destination commit:"
+          git rev-parse HEAD
+
+          test -d app
+          test -d gradle
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f gradlew
+
+          echo "GPT-Video2Anime-Hayao project restored successfully."
