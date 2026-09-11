@@ -20,18 +20,14 @@ import kotlinx.coroutines.launch
 class VideoProcessingService : Service() {
 
     companion object {
-        const val ACTION_START =
-            "com.gptvideo2anime.action.START_PROCESSING"
+        const val ACTION_START = "com.gptvideo2anime.action.START_PROCESSING"
+        const val EXTRA_INPUT_URI = "com.gptvideo2anime.extra.INPUT_URI"
+        const val EXTRA_STRENGTH = "com.gptvideo2anime.extra.STRENGTH"
+        
+        // 👇 NEW: Added Intent extra for the toggle state
+        const val EXTRA_ENHANCE_ENABLED = "com.gptvideo2anime.extra.ENHANCE_ENABLED"
 
-        const val EXTRA_INPUT_URI =
-            "com.gptvideo2anime.extra.INPUT_URI"
-
-        const val EXTRA_STRENGTH =
-            "com.gptvideo2anime.extra.STRENGTH"
-
-        const val ACTION_PROGRESS =
-            "com.gptvideo2anime.PROGRESS"
-
+        const val ACTION_PROGRESS = "com.gptvideo2anime.PROGRESS"
         const val EXTRA_STAGE = "stage"
         const val EXTRA_CURRENT = "current"
         const val EXTRA_TOTAL = "total"
@@ -40,41 +36,29 @@ class VideoProcessingService : Service() {
         private const val NOTIFICATION_ID = 1001
     }
 
-    private val serviceScope =
-        CoroutineScope(
-            SupervisorJob() + Dispatchers.IO
-        )
-
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var modelManager: ModelManager
     private lateinit var videoProcessor: VideoProcessor
 
     override fun onCreate() {
         super.onCreate()
-
         modelManager = ModelManager(this)
         videoProcessor = VideoProcessor(this)
-
         createNotificationChannel()
-
         promoteToForeground("Preparing video processing...")
     }
 
-    override fun onStartCommand(
-        intent: Intent?,
-        flags: Int,
-        startId: Int
-    ): Int {
-
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action != ACTION_START) {
             stopSelf(startId)
             return START_NOT_STICKY
         }
 
-        val inputUri =
-            intent.getStringExtra(EXTRA_INPUT_URI)
-
-        val strength =
-            intent.getIntExtra(EXTRA_STRENGTH, 40)
+        val inputUri = intent.getStringExtra(EXTRA_INPUT_URI)
+        val strength = intent.getIntExtra(EXTRA_STRENGTH, 40)
+        
+        // 👇 NEW: Extract the toggle state (defaults to false if missing)
+        val isEnhanceEnabled = intent.getBooleanExtra(EXTRA_ENHANCE_ENABLED, false)
 
         if (inputUri.isNullOrBlank()) {
             sendProgress("Failed", 0, 0)
@@ -88,13 +72,11 @@ class VideoProcessingService : Service() {
                 processVideo(
                     inputUri = inputUri,
                     strength = strength,
+                    isEnhanceEnabled = isEnhanceEnabled, // 👈 PASSED DOWN
                     startId = startId
                 )
             } catch (exception: Exception) {
-                handleProcessingError(
-                    exception,
-                    startId
-                )
+                handleProcessingError(exception, startId)
             }
         }
 
@@ -104,27 +86,20 @@ class VideoProcessingService : Service() {
     private suspend fun processVideo(
         inputUri: String,
         strength: Int,
+        isEnhanceEnabled: Boolean, // 👈 ADDED PARAMETER
         startId: Int
     ) {
-
         updateNotification("Checking models...")
-
         modelManager.ensureModels()
 
         updateNotification("Opening video...")
 
-        val result =
-            videoProcessor.processVideo(
-                uri = Uri.parse(inputUri),
-                strength = strength
-            ) { current, total, stage ->
-
-                sendProgress(
-                    stage,
-                    current,
-                    total
-                )
-
+        val result = videoProcessor.processVideo(
+            uri = Uri.parse(inputUri),
+            strength = strength,
+            isEnhanceEnabled = isEnhanceEnabled, // 👈 PASSED TO PROCESSOR
+            onProgress = { current, total, stage ->
+                sendProgress(stage, current, total)
                 updateNotification(
                     if (total > 0) {
                         "$stage ($current/$total)"
@@ -133,47 +108,22 @@ class VideoProcessingService : Service() {
                     }
                 )
             }
-
-        Log.i(
-            "VideoProcessingService",
-            "Processing completed: ${result.outputFile.absolutePath}"
         )
 
-        sendProgress(
-            "Complete",
-            1,
-            1
-        )
+        Log.i("VideoProcessingService", "Processing completed: ${result.outputFile.absolutePath}")
 
+        sendProgress("Complete", 1, 1)
         updateNotification("Processing complete")
-
         stopForegroundService()
         stopSelf(startId)
     }
 
-    private fun handleProcessingError(
-        exception: Exception,
-        startId: Int
-    ) {
+    private fun handleProcessingError(exception: Exception, startId: Int) {
+        Log.e("VideoProcessingService", "Processing failed", exception)
+        val message = exception.message ?: "Unknown processing error"
 
-        Log.e(
-            "VideoProcessingService",
-            "Processing failed",
-            exception
-        )
-
-        val message =
-            exception.message
-                ?: "Unknown processing error"
-
-        sendProgress(
-            "Failed",
-            0,
-            0
-        )
-
+        sendProgress("Failed", 0, 0)
         updateNotification("Failed: $message")
-
         stopForegroundService()
         stopSelf(startId)
     }
@@ -201,11 +151,7 @@ class VideoProcessingService : Service() {
         }
     }
 
-    private fun sendProgress(
-        stage: String,
-        current: Int,
-        total: Int
-    ) {
+    private fun sendProgress(stage: String, current: Int, total: Int) {
         sendBroadcast(
             Intent(ACTION_PROGRESS).apply {
                 setPackage(packageName)
@@ -216,17 +162,13 @@ class VideoProcessingService : Service() {
         )
     }
 
-    private fun createNotification(
-        text: String
-    ): Notification {
-
-        val builder =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                Notification.Builder(this, CHANNEL_ID)
-            } else {
-                @Suppress("DEPRECATION")
-                Notification.Builder(this)
-            }
+    private fun createNotification(text: String): Notification {
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
 
         return builder
             .setContentTitle("GPT Video2Anime")
@@ -236,32 +178,15 @@ class VideoProcessingService : Service() {
             .build()
     }
 
-    private fun updateNotification(
-        text: String
-    ) {
-
-        val manager =
-            getSystemService(
-                NOTIFICATION_SERVICE
-            ) as NotificationManager
-
-        manager.notify(
-            NOTIFICATION_ID,
-            createNotification(text)
-        )
+    private fun updateNotification(text: String) {
+        val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(NOTIFICATION_ID, createNotification(text))
     }
 
     private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
 
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            return
-        }
-
-        val manager =
-            getSystemService(
-                NOTIFICATION_SERVICE
-            ) as NotificationManager
-
+        val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
@@ -271,9 +196,7 @@ class VideoProcessingService : Service() {
         )
     }
 
-    override fun onBind(
-        intent: Intent?
-    ): IBinder? = null
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
         serviceScope.cancel()
