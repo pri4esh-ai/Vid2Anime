@@ -3,14 +3,16 @@ package com.gptvideo2anime.pipeline
 import android.graphics.Bitmap
 import android.util.Log
 import com.gptvideo2anime.inference.OnnxAnimeEngine
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/**
- * Pipelined video processor that runs decode, AI, and encode stages concurrently.
- */
 class VideoPipeline(
     private val animeEngine: OnnxAnimeEngine,
     private val strength: Float,
@@ -164,4 +166,4 @@ class VideoPipeline(
 
         return result
     }
-}s
+}
