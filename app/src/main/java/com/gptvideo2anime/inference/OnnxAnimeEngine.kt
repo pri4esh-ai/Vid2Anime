@@ -1,6 +1,7 @@
 package com.gptvideo2anime.inference
 
 import android.graphics.Bitmap
+import android.util.Log
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
@@ -21,7 +22,23 @@ class OnnxAnimeEngine(
     }
 
     private val environment: OrtEnvironment = OrtEnvironment.getEnvironment()
-    private val session: OrtSession = environment.createSession(modelPath, OrtSession.SessionOptions())
+    
+    // 👇 CRITICAL FIX: Re-enable NNAPI and Graph Optimizations
+    private val sessionOptions = OrtSession.SessionOptions().apply {
+        setIntraOpNumThreads(4) // Use 4 CPU threads if NNAPI fails
+        setInterOpNumThreads(1)
+        setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+        
+        // Attempt NNAPI (Hardware/GPU Acceleration on Android)
+        val nnapiResult = runCatching { addNnapi() }
+        if (nnapiResult.isSuccess) {
+            Log.i("OnnxAnimeEngine", "✅ NNAPI (Hardware Acceleration) ENABLED.")
+        } else {
+            Log.w("OnnxAnimeEngine", "⚠️ NNAPI failed, using CPU threads: ${nnapiResult.exceptionOrNull()?.message}")
+        }
+    }
+
+    private val session: OrtSession = environment.createSession(modelPath, sessionOptions)
 
     private val inputName: String = session.inputNames.first()
     private val inputInfo: TensorInfo = session.inputInfo[inputName]?.info as TensorInfo
@@ -294,6 +311,7 @@ class OnnxAnimeEngine(
 
     override fun close() {
         runCatching { session.close() }
+        runCatching { sessionOptions.close() } // Close options too
         runCatching { environment.close() }
     }
 }
