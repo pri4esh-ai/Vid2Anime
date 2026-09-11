@@ -31,9 +31,6 @@ class VideoPipeline(
     private val SKIP_THRESHOLD = 2
 
     private var hashPixels: IntArray = IntArray(0)
-    private var blendBitmap: Bitmap? = null
-    private var blendCanvas: android.graphics.Canvas? = null
-    private val blendPaint = android.graphics.Paint()
 
     data class DecodedFrame(
         val bitmap: Bitmap,
@@ -59,16 +56,23 @@ class VideoPipeline(
                     val currentHash = computeFrameHash(frame.bitmap)
                     val shouldSkip = shouldSkipFrame(currentHash)
 
-                    val processedBitmap = if (shouldSkip) {
+                    val processedBitmap: Bitmap
+                    if (shouldSkip) {
                         Log.d(TAG, "Skipping identical frame ${frame.frameIndex}")
-                        frame.bitmap
+                        processedBitmap = frame.bitmap
                     } else {
                         val animeBitmap = animeEngine.processFrame(frame.bitmap)
-                        blendFrames(frame.bitmap, animeBitmap).also {
-                            if (animeBitmap !== frame.bitmap && !animeBitmap.isRecycled) {
-                                animeBitmap.recycle()
-                            }
+                        processedBitmap = blendFrames(frame.bitmap, animeBitmap)
+                        
+                        // Recycle animeBitmap ONLY if it wasn't passed as the final result
+                        if (animeBitmap !== processedBitmap && animeBitmap !== frame.bitmap && !animeBitmap.isRecycled) {
+                            animeBitmap.recycle()
                         }
+                    }
+
+                    // Recycle original decoded frame ONLY if it wasn't passed as the final result
+                    if (processedBitmap !== frame.bitmap && !frame.bitmap.isRecycled) {
+                        frame.bitmap.recycle()
                     }
 
                     val result = ProcessedFrame(
@@ -86,6 +90,7 @@ class VideoPipeline(
 
                 } catch (e: Exception) {
                     Log.e(TAG, "AI processing error on frame ${frame.frameIndex}", e)
+                    if (!frame.bitmap.isRecycled) frame.bitmap.recycle()
                 }
             }
 
@@ -171,18 +176,15 @@ class VideoPipeline(
         val width = original.width
         val height = original.height
 
-        if (blendBitmap == null || blendBitmap!!.width != width || blendBitmap!!.height != height) {
-            blendBitmap?.recycle()
-            blendBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            blendCanvas = android.graphics.Canvas(blendBitmap!!)
-        }
+        val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(result)
 
-        val canvas = blendCanvas!!
         canvas.drawBitmap(original, 0f, 0f, null)
 
-        blendPaint.alpha = (strength * 255).toInt().coerceIn(0, 255)
-        canvas.drawBitmap(anime, 0f, 0f, blendPaint)
+        val paint = android.graphics.Paint()
+        paint.alpha = (strength * 255).toInt().coerceIn(0, 255)
+        canvas.drawBitmap(anime, 0f, 0f, paint)
 
-        return blendBitmap!!
+        return result
     }
 }
