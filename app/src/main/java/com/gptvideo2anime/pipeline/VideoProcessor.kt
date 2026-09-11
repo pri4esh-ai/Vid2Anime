@@ -27,7 +27,7 @@ class VideoProcessor(
     suspend fun processVideo(
         uri: Uri,
         strength: Int,
-        isEnhanceEnabled: Boolean, // 👈 ADDED PARAMETER
+        isEnhanceEnabled: Boolean,
         onProgress: (Int, Int, String) -> Unit
     ): ProcessResult = withContext(Dispatchers.IO) {
         // Validate URI and retrieve metadata
@@ -54,13 +54,18 @@ class VideoProcessor(
 
         val normalizedStrength = (strength.coerceIn(0, 100)) / 100f
 
-        OnnxAnimeEngine(modelPath).use { engine ->
+        // ✅ Shifted to 384 for faster mobile processing
+        OnnxAnimeEngine(
+            modelPath = modelPath,
+            modelWidth = 384,
+            modelHeight = 384
+        ).use { engine ->
             codecEngine.processVideo(
                 inputUri = uri,
                 outputFile = outputFile,
                 animeEngine = engine,
                 strength = normalizedStrength,
-                isEnhanceEnabled = isEnhanceEnabled, // 👈 PASSED DOWN TO CODEC
+                isEnhanceEnabled = isEnhanceEnabled,
                 onProgress = { current, total, stage ->
                     onProgress(current, total, stage)
                 }
