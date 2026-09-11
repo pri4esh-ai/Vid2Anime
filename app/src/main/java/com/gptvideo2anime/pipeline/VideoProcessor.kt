@@ -16,7 +16,6 @@ data class ProcessResult(
 class VideoProcessor(
     private val context: Context
 ) {
-
     companion object {
         private const val TAG = "VideoProcessor"
         private const val MAX_TEMP_FILES = 5
@@ -28,14 +27,14 @@ class VideoProcessor(
     suspend fun processVideo(
         uri: Uri,
         strength: Int,
+        isEnhanceEnabled: Boolean, // 👈 ADDED PARAMETER
         onProgress: (Int, Int, String) -> Unit
     ): ProcessResult = withContext(Dispatchers.IO) {
-
         // Validate URI and retrieve metadata
         val videoInfo = codecEngine.inspect(uri)
         Log.i(TAG, "Processing video: ${videoInfo.width}x${videoInfo.height}, FPS: ${videoInfo.frameRate}")
 
-        // Ensure model file is accessible (calling suspend fun animeModelPath inside coroutine)
+        // Ensure model file is accessible
         val modelPath = modelManager.animeModelPath()
             ?: throw IllegalStateException("AnimeGAN model missing from local storage.")
 
@@ -46,8 +45,6 @@ class VideoProcessor(
 
         // Output directory setup
         val outputDir = File(context.filesDir, "output").apply { mkdirs() }
-        
-        // Cleanup old generated videos to prevent internal storage exhaustion
         cleanOldOutputs(outputDir)
 
         val outputFile = File(
@@ -55,7 +52,6 @@ class VideoProcessor(
             "anime_${System.currentTimeMillis()}.mp4"
         )
 
-        // Clamp strength between 0% and 100% and scale to float 0.0 - 1.0
         val normalizedStrength = (strength.coerceIn(0, 100)) / 100f
 
         OnnxAnimeEngine(modelPath).use { engine ->
@@ -63,10 +59,12 @@ class VideoProcessor(
                 inputUri = uri,
                 outputFile = outputFile,
                 animeEngine = engine,
-                strength = normalizedStrength
-            ) { current, total, stage ->
-                onProgress(current, total, stage)
-            }
+                strength = normalizedStrength,
+                isEnhanceEnabled = isEnhanceEnabled, // 👈 PASSED DOWN TO CODEC
+                onProgress = { current, total, stage ->
+                    onProgress(current, total, stage)
+                }
+            )
         }
 
         if (!outputFile.exists() || outputFile.length() == 0L) {
