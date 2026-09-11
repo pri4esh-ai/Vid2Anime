@@ -1,0 +1,24 @@
+# 1. Create a fresh folder and initialize Git
+mkdir clean-build && cd clean-build
+git init
+
+# 2. Fetch ONLY that specific commit from your old repo
+git remote add old-repo https://github.com/pri4esh-ai/GPT-Video2Anime-Hayao.git
+git fetch old-repo 457729011f42cfc64e7948e5e979ca0b896ee947
+git checkout FETCH_HEAD
+
+# 3. Sever all ties with the old repo (this deletes all old history/branches)
+rm -rf .git
+
+# 4. Start completely fresh as a brand new repository
+git init
+git add .
+git commit -m "Initial commit: Last working build base (pre-realesrgan removal)"
+git branch -M main
+
+# 5. Link to your NEW repository and push
+# ⚠️ REPLACE THE URL BELOW WITH YOUR ACTUAL NEW REPO URL!
+git remote add origin https://github.com/YOUR_USERNAME/YOUR_NEW_REPO.git
+git push -u origin main
+
+echo "✅ Done! Your clean build is now the 'main' branch of your new repo."
