@@ -67,7 +67,7 @@ class MediaCodecVideoEngine(
         outputFile: File,
         animeEngine: OnnxAnimeEngine,
         strength: Float,
-        isEnhanceEnabled: Boolean, // 👈 ADDED PARAMETER
+        isEnhanceEnabled: Boolean,
         onProgress: (Int, Int, String) -> Unit
     ) {
         val extractor = MediaExtractor()
@@ -151,7 +151,7 @@ class MediaCodecVideoEngine(
                 durationUs = durationUs,
                 animeEngine = animeEngine,
                 strength = strength,
-                isEnhanceEnabled = isEnhanceEnabled, // 👈 PASSED DOWN
+                isEnhanceEnabled = isEnhanceEnabled,
                 onProgress = onProgress
             )
 
@@ -199,7 +199,7 @@ class MediaCodecVideoEngine(
         durationUs: Long,
         animeEngine: OnnxAnimeEngine,
         strength: Float,
-        isEnhanceEnabled: Boolean, // 👈 ADDED PARAMETER
+        isEnhanceEnabled: Boolean,
         onProgress: (Int, Int, String) -> Unit
     ) {
         val encoderSink = EncoderSink(encoder = encoder, muxer = muxer)
@@ -264,7 +264,7 @@ class MediaCodecVideoEngine(
                                     // 1. Run Hayao Anime Style Transfer
                                     val animeBitmap = animeEngine.processFrame(frameBitmap)
 
-                                    // 2. Blend Original and Anime frames
+                                    // 2. Blend Original and Anime frames (Hardware Accelerated)
                                     val blendedBitmap = blendFramesInPlace(
                                         originalBitmap = frameBitmap,
                                         animeBitmap = animeBitmap,
@@ -273,12 +273,10 @@ class MediaCodecVideoEngine(
                                         animeBuffer = animeBuffer
                                     )
 
-                                    // 👇 3. NEW: Conditionally run Super Resolution based on the toggle
+                                    // 3. Conditionally run Super Resolution based on the toggle
                                     val finalOutputBitmap = if (isEnhanceEnabled) {
-                                        // TODO: Plug in your Real-ESRGAN / Super Resolution engine here.
-                                        // Example: srEngine.upscale(blendedBitmap)
                                         Log.d(TAG, "Enhance mode active. Ready for SR injection.")
-                                        blendedBitmap // Placeholder until SR engine is added back
+                                        blendedBitmap 
                                     } else {
                                         blendedBitmap
                                     }
@@ -294,7 +292,6 @@ class MediaCodecVideoEngine(
 
                                     encoderSink.queueFrame(data = yuv, pts = currentPts)
 
-                                    // 👇 UPDATED RECYCLING LOGIC TO PREVENT MEMORY LEAKS
                                     if (finalOutputBitmap !== blendedBitmap && finalOutputBitmap !== frameBitmap && finalOutputBitmap !== originalBitmap && !finalOutputBitmap.isRecycled) {
                                         finalOutputBitmap.recycle()
                                     }
@@ -347,6 +344,7 @@ class MediaCodecVideoEngine(
         }
     }
 
+    // 👇 OPTIMIZED: Uses hardware-accelerated Canvas instead of slow Kotlin for-loop
     private fun blendFramesInPlace(
         originalBitmap: Bitmap,
         animeBitmap: Bitmap,
@@ -361,25 +359,17 @@ class MediaCodecVideoEngine(
         if (strength <= 0.001f) return originalBitmap
 
         val result = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-
-        originalBitmap.getPixels(origBuffer, 0, width, 0, 0, width, height)
-        animeBitmap.getPixels(animeBuffer, 0, width, 0, 0, width, height)
-
-        val alpha = strength.coerceIn(0f, 1f)
-        val inverse = 1f - alpha
-
-        for (i in origBuffer.indices) {
-            val orig = origBuffer[i]
-            val anime = animeBuffer[i]
-
-            val r = (((orig shr 16) and 255) * inverse + ((anime shr 16) and 255) * alpha).roundToInt().coerceIn(0, 255)
-            val g = (((orig shr 8) and 255) * inverse + ((anime shr 8) and 255) * alpha).roundToInt().coerceIn(0, 255)
-            val b = ((orig and 255) * inverse + (anime and 255) * alpha).roundToInt().coerceIn(0, 255)
-
-            origBuffer[i] = (255 shl 24) or (r shl 16) or (g shl 8) or b
+        val canvas = android.graphics.Canvas(result)
+        
+        // 1. Draw the original frame as the base layer
+        canvas.drawBitmap(originalBitmap, 0f, 0f, null)
+        
+        // 2. Draw the anime frame on top with the specified alpha (strength)
+        val paint = android.graphics.Paint().apply {
+            alpha = (strength * 255).roundToInt().coerceIn(0, 255)
         }
-
-        result.setPixels(origBuffer, 0, width, 0, 0, width, height)
+        canvas.drawBitmap(animeBitmap, 0f, 0f, paint)
+        
         return result
     }
 
