@@ -1,38 +1,20 @@
-name: Bootstrap to New Repo
+# 1. Setup and fetch the exact commit
+mkdir clean-code && cd clean-code
+git init
+git remote add old-repo https://github.com/pri4esh-ai/GPT-Video2Anime-Hayao.git
+git fetch old-repo 457729011f42cfc64e7948e5e979ca0b896ee947
+git checkout FETCH_HEAD
 
-on:
-  workflow_dispatch: # Allows you to run this manually
+# 2. Delete old Git history AND old GitHub workflows
+rm -rf .git
+rm -rf .github 
 
-jobs:
-  bootstrap:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 📥 Fetch specific commit and setup
-        run: |
-          # 1. Create a fresh folder and initialize Git
-          mkdir clean-build && cd clean-build
-          git init
+# 3. Initialize fresh repo with ONLY the source code
+git init
+git add .
+git commit -m "Initial commit: Clean source code"
+git branch -M main
 
-          # 2. Fetch ONLY that specific commit from your old repo
-          git remote add old-repo https://github.com/pri4esh-ai/GPT-Video2Anime-Hayao.git
-          git fetch old-repo 457729011f42cfc64e7948e5e979ca0b896ee947
-          git checkout FETCH_HEAD
-
-          # 3. Sever all ties with the old repo (deletes old history)
-          rm -rf .git
-
-          # 4. Start completely fresh as a brand new repository
-          git init
-          git add .
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -m "Initial commit: Last working build base (pre-realesrgan removal)"
-          git branch -M main
-
-          # 5. Link to your NEW repository and push
-          # ⚠️ This uses the secret you created in GitHub Settings
-          git remote add origin "${{ secrets.NEW_REPO_URL }}"
-          git push -u origin main
-          
-      - name: ✅ Complete
-        run: echo "✅ Done! Your clean build is now the 'main' branch of your new repo."
+# 4. Push to your new empty repo
+git remote add origin https://github.com/pri4esh-ai/Vid2Anime.git
+git push -u origin main
