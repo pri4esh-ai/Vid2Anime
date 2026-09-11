@@ -1,158 +1,159 @@
 package com.gptvideo2anime.model
 
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import java.security.MessageDigest
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
 
-class ModelManager(
-    private val context: Context
-) {
-
+class ModelManager(private val context: Context) {
     companion object {
-        private const val MODEL_DIR = "models"
-        private const val ANIME_ASSET = "models/AnimeGANv3_Hayao_36.onnx"
-        private const val ANIME_NAME = "AnimeGANv3_Hayao_36.onnx"
-        private const val ANIME_SHA256 = "95ba7b219073fd5b12f569bc38056ffd3019cf4caf15b1feb9f73d1286c9f69d"
-        private const val BUFFER_SIZE = 1024 * 1024 // 1MB buffer
+        private const val TAG = "ModelManager"
+        
+        // ✅ Updated to match the bundled model filename
+        private const val ANIME_MODEL_NAME = "AnimeGANv3_Hayao_36.onnx"
+        
+        // Fallback URL in case bundled model is missing
+        private const val ANIME_MODEL_URL = "https://github.com/TachibanaYoshino/AnimeGANv3/releases/download/v1.1.0/AnimeGANv3_Hayao_36.onnx"
     }
 
-    private val modelDirectory = File(context.filesDir, MODEL_DIR)
-    private val animeFile = File(modelDirectory, ANIME_NAME)
+    sealed class DownloadState {
+        data class Progress(val percent: Int) : DownloadState()
+        object Completed : DownloadState()
+        data class Error(val message: String) : DownloadState()
+    }
 
-    /**
-     * Retrieves the absolute path to the verified ONNX model.
-     * Offloads SHA-256 calculation to Dispatchers.IO to prevent main-thread lag.
-     */
+    private val modelsDir: File
+        get() = File(context.filesDir, "models").apply { if (!exists()) mkdirs() }
+
+    val animeModelFile: File
+        get() = File(modelsDir, ANIME_MODEL_NAME)
+
+    suspend fun ensureModels(): String {
+        return animeModelPath() ?: throw IllegalStateException("Failed to ensure models are present.")
+    }
+
     suspend fun animeModelPath(): String? = withContext(Dispatchers.IO) {
-        if (isValid(animeFile, ANIME_SHA256)) {
-            animeFile.absolutePath
-        } else {
-            null
+        if (isModelValid(animeModelFile)) {
+            return@withContext animeModelFile.absolutePath
         }
+
+        if (copyFromAssets(ANIME_MODEL_NAME, animeModelFile)) {
+            Log.i(TAG, "Successfully extracted model from assets.")
+            return@withContext animeModelFile.absolutePath
+        }
+
+        Log.i(TAG, "Downloading model from remote CDN: $ANIME_MODEL_URL")
+        val success = downloadModelInternal(ANIME_MODEL_URL, animeModelFile)
+        if (success) animeModelFile.absolutePath else null
     }
 
-    /**
-     * Non-blocking suspension check to determine if all models are present and valid.
-     */
-    suspend fun areAllModelsInstalled(): Boolean = withContext(Dispatchers.IO) {
-        animeModelPath() != null
-    }
-
-    /**
-     * Non-blocking suspension query for UI status messaging.
-     */
-    suspend fun modelStatus(): String = withContext(Dispatchers.IO) {
-        if (areAllModelsInstalled()) {
-            "Hayao model ready"
-        } else {
-            "Installing Hayao model..."
-        }
-    }
-
-    /**
-     * Ensures models are unpacked from assets to internal storage and verified.
-     */
-    suspend fun ensureModels(
-        onLog: ((String) -> Unit)? = null
-    ) = withContext(Dispatchers.IO) {
-        if (!modelDirectory.exists()) {
-            modelDirectory.mkdirs()
+    fun downloadModelWithProgress(): Flow<DownloadState> = flow {
+        if (isModelValid(animeModelFile)) {
+            emit(DownloadState.Completed)
+            return@flow
         }
 
-        copyAssetIfNeeded(
-            assetName = ANIME_ASSET,
-            target = animeFile,
-            expectedSha = ANIME_SHA256,
-            onLog = onLog
-        )
-
-        require(isValid(animeFile, ANIME_SHA256)) {
-            "Hayao model installation failed verification."
-        }
-
-        onLog?.invoke("Hayao model ready.")
-    }
-
-    private fun copyAssetIfNeeded(
-        assetName: String,
-        target: File,
-        expectedSha: String,
-        onLog: ((String) -> Unit)?
-    ) {
-        if (isValid(target, expectedSha)) {
-            return
-        }
-
-        onLog?.invoke("Installing ${target.name}...")
-
-        val temp = File(target.parentFile, "${target.name}.part")
+        val tempFile = File(modelsDir, "$ANIME_MODEL_NAME.tmp")
 
         try {
-            if (temp.exists()) {
-                temp.delete()
+            val url = URL(ANIME_MODEL_URL)
+            val connection = url.openConnection() as HttpURLConnection
+            connection.connectTimeout = 15000
+            connection.readTimeout = 30000
+            connection.connect()
+
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                emit(DownloadState.Error("HTTP Error ${connection.responseCode}: ${connection.responseMessage}"))
+                return@flow
             }
 
-            context.assets.open(assetName).use { input ->
-                FileOutputStream(temp).use { output ->
-                    input.copyTo(output, bufferSize = BUFFER_SIZE)
+            val fileLength = connection.contentLength
+            val input: InputStream = connection.inputStream
+            val output = FileOutputStream(tempFile)
+            val data = ByteArray(8192)
+            var total: Long = 0
+            var count: Int
+            var lastProgress = -1
+
+            while (input.read(data).also { count = it } != -1) {
+                total += count.toLong()
+                output.write(data, 0, count)
+                if (fileLength > 0) {
+                    val progress = ((total * 100) / fileLength).toInt()
+                    if (progress != lastProgress) {
+                        lastProgress = progress
+                        emit(DownloadState.Progress(progress))
+                    }
                 }
             }
 
-            val actualSha = sha256(temp)
+            output.flush()
+            output.close()
+            input.close()
 
-            require(actualSha.equals(expectedSha, ignoreCase = true)) {
-                "SHA-256 mismatch for ${target.name}. Expected: $expectedSha, Found: $actualSha"
-            }
-
-            if (target.exists()) {
-                target.delete()
-            }
-
-            if (!temp.renameTo(target)) {
-                temp.copyTo(target, overwrite = true)
-                temp.delete()
+            if (tempFile.exists() && tempFile.renameTo(animeModelFile)) {
+                emit(DownloadState.Completed)
+            } else {
+                emit(DownloadState.Error("Failed to save downloaded model file."))
             }
         } catch (e: Exception) {
-            if (temp.exists()) {
-                temp.delete()
-            }
-            throw e
+            tempFile.delete()
+            emit(DownloadState.Error(e.localizedMessage ?: "Network error downloading model."))
         }
-    }
+    }.flowOn(Dispatchers.IO)
 
-    private fun isValid(
-        file: File,
-        expectedSha: String
-    ): Boolean {
-        if (!file.exists() || file.length() <= 0L) {
-            return false
-        }
-
+    private fun copyFromAssets(assetName: String, outputFile: File): Boolean {
         return try {
-            sha256(file).equals(expectedSha, ignoreCase = true)
-        } catch (_: Exception) {
+            val assetPath = "models/$assetName"
+            context.assets.open(assetPath).use { input ->
+                FileOutputStream(outputFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            isModelValid(outputFile)
+        } catch (e: Exception) {
+            outputFile.delete()
             false
         }
     }
 
-    private fun sha256(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-
-        file.inputStream().use { input ->
-            val buffer = ByteArray(BUFFER_SIZE)
-            var count: Int
-            while (input.read(buffer).also { count = it } >= 0) {
-                if (count > 0) {
-                    digest.update(buffer, 0, count)
+    private fun downloadModelInternal(urlString: String, outputFile: File): Boolean {
+        val tempFile = File(modelsDir, "$ANIME_MODEL_NAME.tmp")
+        return try {
+            URL(urlString).openStream().use { input ->
+                FileOutputStream(tempFile).use { output ->
+                    input.copyTo(output)
                 }
             }
+            if (tempFile.exists() && tempFile.length() > 0) {
+                tempFile.renameTo(outputFile)
+            } else {
+                tempFile.delete()
+                false
+            }
+        } catch (e: Exception) {
+            tempFile.delete()
+            false
         }
+    }
 
-        return digest.digest().joinToString("") { byte ->
-            "%02x".format(byte)
+    private fun isModelValid(file: File): Boolean {
+        return file.exists() && file.length() > 1024 * 1024
+    }
+
+    fun clearDownloadedModels() {
+        if (modelsDir.exists()) {
+            modelsDir.listFiles()?.forEach { file ->
+                file.delete()
+            }
         }
     }
 }
