@@ -29,7 +29,6 @@ data class VideoInfo(
 class MediaCodecVideoEngine(
     private val context: Context
 ) {
-
     companion object {
         private const val TAG = "MediaCodecVideoEngine"
         private const val TIMEOUT_US = 10_000L
@@ -68,13 +67,13 @@ class MediaCodecVideoEngine(
         outputFile: File,
         animeEngine: OnnxAnimeEngine,
         strength: Float,
+        isEnhanceEnabled: Boolean, // 👈 ADDED PARAMETER
         onProgress: (Int, Int, String) -> Unit
     ) {
         val extractor = MediaExtractor()
         var decoder: MediaCodec? = null
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
-
         val tempVideo = File(
             outputFile.parentFile,
             "${outputFile.nameWithoutExtension}_video.mp4"
@@ -87,15 +86,14 @@ class MediaCodecVideoEngine(
             setExtractorDataSource(extractor, inputUri)
             val videoTrack = findVideoTrack(extractor)
             require(videoTrack >= 0) { "Video track missing." }
-
             extractor.selectTrack(videoTrack)
+
             val format = extractor.getTrackFormat(videoTrack)
             val inputMime = format.getString(MediaFormat.KEY_MIME)
                 ?: throw IllegalStateException("Video MIME type missing.")
 
             val originalWidth = format.getInteger(MediaFormat.KEY_WIDTH)
             val originalHeight = format.getInteger(MediaFormat.KEY_HEIGHT)
-
             val sourceWidth = makeEvenDimension(originalWidth)
             val sourceHeight = makeEvenDimension(originalHeight)
 
@@ -153,6 +151,7 @@ class MediaCodecVideoEngine(
                 durationUs = durationUs,
                 animeEngine = animeEngine,
                 strength = strength,
+                isEnhanceEnabled = isEnhanceEnabled, // 👈 PASSED DOWN
                 onProgress = onProgress
             )
 
@@ -200,23 +199,20 @@ class MediaCodecVideoEngine(
         durationUs: Long,
         animeEngine: OnnxAnimeEngine,
         strength: Float,
+        isEnhanceEnabled: Boolean, // 👈 ADDED PARAMETER
         onProgress: (Int, Int, String) -> Unit
     ) {
         val encoderSink = EncoderSink(encoder = encoder, muxer = muxer)
         val decoderInfo = MediaCodec.BufferInfo()
-
         var extractorDone = false
         var decoderDone = false
         var encoderInputEnded = false
-
         var processedFrames = 0
         val totalFrames = estimateFrameCount(durationUs, fps)
 
-        // Preallocate primitive arrays to avoid GC pressure / OOM
         val pixelCount = sourceWidth * sourceHeight
         val origBuffer = IntArray(pixelCount)
         val animeBuffer = IntArray(pixelCount)
-
         var lastPtsUs = 0L
 
         while (!encoderSink.isEndOfStream()) {
@@ -225,10 +221,9 @@ class MediaCodecVideoEngine(
                 if (inputIndex >= 0) {
                     val inputBuffer = decoder.getInputBuffer(inputIndex)
                         ?: throw IllegalStateException("Decoder input buffer unavailable.")
-
                     inputBuffer.clear()
-                    val sampleSize = extractor.readSampleData(inputBuffer, 0)
 
+                    val sampleSize = extractor.readSampleData(inputBuffer, 0)
                     if (sampleSize < 0) {
                         decoder.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         extractorDone = true
@@ -266,9 +261,11 @@ class MediaCodecVideoEngine(
                                         Bitmap.createScaledBitmap(originalBitmap, sourceWidth, sourceHeight, true)
                                     }
 
+                                    // 1. Run Hayao Anime Style Transfer
                                     val animeBitmap = animeEngine.processFrame(frameBitmap)
 
-                                    val finalBitmap = blendFramesInPlace(
+                                    // 2. Blend Original and Anime frames
+                                    val blendedBitmap = blendFramesInPlace(
                                         originalBitmap = frameBitmap,
                                         animeBitmap = animeBitmap,
                                         strength = strength,
@@ -276,7 +273,17 @@ class MediaCodecVideoEngine(
                                         animeBuffer = animeBuffer
                                     )
 
-                                    val yuv = YuvConverter.bitmapToNv12(finalBitmap)
+                                    // 👇 3. NEW: Conditionally run Super Resolution based on the toggle
+                                    val finalOutputBitmap = if (isEnhanceEnabled) {
+                                        // TODO: Plug in your Real-ESRGAN / Super Resolution engine here.
+                                        // Example: srEngine.upscale(blendedBitmap)
+                                        Log.d(TAG, "Enhance mode active. Ready for SR injection.")
+                                        blendedBitmap // Placeholder until SR engine is added back
+                                    } else {
+                                        blendedBitmap
+                                    }
+
+                                    val yuv = YuvConverter.bitmapToNv12(finalOutputBitmap)
 
                                     val currentPts = if (decoderInfo.presentationTimeUs > lastPtsUs) {
                                         decoderInfo.presentationTimeUs
@@ -287,8 +294,12 @@ class MediaCodecVideoEngine(
 
                                     encoderSink.queueFrame(data = yuv, pts = currentPts)
 
-                                    if (finalBitmap !== frameBitmap && finalBitmap !== originalBitmap && !finalBitmap.isRecycled) {
-                                        finalBitmap.recycle()
+                                    // 👇 UPDATED RECYCLING LOGIC TO PREVENT MEMORY LEAKS
+                                    if (finalOutputBitmap !== blendedBitmap && finalOutputBitmap !== frameBitmap && finalOutputBitmap !== originalBitmap && !finalOutputBitmap.isRecycled) {
+                                        finalOutputBitmap.recycle()
+                                    }
+                                    if (blendedBitmap !== frameBitmap && blendedBitmap !== originalBitmap && !blendedBitmap.isRecycled) {
+                                        blendedBitmap.recycle()
                                     }
                                     if (frameBitmap !== originalBitmap && !frameBitmap.isRecycled) {
                                         frameBitmap.recycle()
@@ -306,7 +317,6 @@ class MediaCodecVideoEngine(
                                     } else 0
 
                                     onProgress(progress, 100, "Encoding frame $processedFrames...")
-
                                 } finally {
                                     runCatching { image.close() }
                                 }
@@ -400,6 +410,7 @@ class MediaCodecVideoEngine(
             if (outputFile.exists()) outputFile.delete()
 
             muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+
             val outputVideoTrack = muxer.addTrack(videoExtractor.getTrackFormat(videoTrack))
             val outputAudioTrack = muxer.addTrack(sourceExtractor.getTrackFormat(audioTrack))
 
@@ -552,8 +563,8 @@ class MediaCodecVideoEngine(
                 if (inputIndex >= 0) {
                     val inputBuffer = encoder.getInputBuffer(inputIndex)
                         ?: throw IllegalStateException("Encoder input buffer unavailable.")
-
                     inputBuffer.clear()
+
                     if (data.size > inputBuffer.remaining()) {
                         throw IllegalStateException("Encoded frame input too large: data=${data.size}, remaining=${inputBuffer.remaining()}")
                     }
@@ -562,6 +573,7 @@ class MediaCodecVideoEngine(
                     encoder.queueInputBuffer(inputIndex, 0, data.size, pts.coerceAtLeast(0L), 0)
                     break
                 }
+
                 drain(0L)
                 if (eos) throw IllegalStateException("Encoder reached EOS unexpectedly.")
             }
@@ -598,7 +610,6 @@ class MediaCodecVideoEngine(
                             outputBuffer.limit(info.offset + info.size)
                             muxer.writeSampleData(track, outputBuffer, info)
                         }
-
                         if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                             eos = true
                         }
