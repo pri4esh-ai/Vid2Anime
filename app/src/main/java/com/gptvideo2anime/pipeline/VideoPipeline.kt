@@ -6,8 +6,6 @@ import com.gptvideo2anime.inference.OnnxAnimeEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -17,7 +15,8 @@ class VideoPipeline(
     private val animeEngine: OnnxAnimeEngine,
     private val strength: Float,
     private val isEnhanceEnabled: Boolean,
-    private val bufferSize: Int = 3
+    // ✅ Changed default from 3 to 4 for smoother parallel processing
+    private val bufferSize: Int = 4
 ) {
     companion object {
         private const val TAG = "VideoPipeline"
@@ -110,16 +109,29 @@ class VideoPipeline(
         return aiQueue.poll(FRAME_TIMEOUT_MS, TimeUnit.MILLISECONDS)
     }
 
+    // ✅ Added logging to track remaining frames when stopping
     fun stop() {
         isRunning.set(false)
+        Log.i(TAG, "Pipeline stop signal sent. Remaining: decode=${decodeQueue.size()}, ai=${aiQueue.size()}")
     }
 
+    // ✅ Optimized: Poll every 5ms instead of 50ms for faster end-of-stream drain
     fun awaitCompletion(timeoutMs: Long = 30_000L) {
         val deadline = System.currentTimeMillis() + timeoutMs
-        while ((decodeQueue.isNotEmpty() || aiQueue.isNotEmpty())
-            && System.currentTimeMillis() < deadline) {
-            Thread.sleep(50)
+
+        while (System.currentTimeMillis() < deadline) {
+            val decodeEmpty = decodeQueue.isEmpty()
+            val aiEmpty = aiQueue.isEmpty()
+
+            if (decodeEmpty && aiEmpty) {
+                Log.i(TAG, "Pipeline drained completely.")
+                return
+            }
+
+            Thread.sleep(5)
         }
+
+        Log.w(TAG, "Pipeline drain timed out. decode=${decodeQueue.size()}, ai=${aiQueue.size()}")
     }
 
     private fun computeFrameHash(bitmap: Bitmap): Int {
