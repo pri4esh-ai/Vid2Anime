@@ -18,6 +18,7 @@ data class UiState(
     val selectedVideo: Uri? = null,
     val resultVideo: Uri? = null,
     val strength: Int = 40,
+    val isEnhanceEnabled: Boolean = false, // 👈 NEW: Toggle state
     val progress: Float = 0f,
     val isProcessing: Boolean = false,
     val isModelReady: Boolean = false,
@@ -81,6 +82,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // 👇 NEW: Handles the toggle switch
+    fun onEnhanceToggleChanged(isEnabled: Boolean) {
+        if (!_uiState.value.isProcessing) {
+            _uiState.update { it.copy(isEnhanceEnabled = isEnabled) }
+        }
+    }
+
     fun resetState() {
         _uiState.update {
             it.copy(
@@ -96,6 +104,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun processVideo() {
         val inputUri = _uiState.value.selectedVideo ?: return
         val currentStrength = _uiState.value.strength
+        val currentEnhance = _uiState.value.isEnhanceEnabled // 👈 NEW
 
         _uiState.update {
             it.copy(
@@ -110,19 +119,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val result = videoProcessor.processVideo(
                     uri = inputUri,
-                    strength = currentStrength
-                ) { current, total, stage ->
-                    val value = if (total > 0) {
-                        (current.toFloat() / total.toFloat()).coerceIn(0f, 1f)
-                    } else 0f
+                    strength = currentStrength,
+                    isEnhanceEnabled = currentEnhance, // 👇 NEW: Passed to processor
+                    onProgress = { current, total, stage ->
+                        val value = if (total > 0) {
+                            (current.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                        } else 0f
 
-                    _uiState.update {
-                        it.copy(
-                            progress = value,
-                            status = stage
-                        )
+                        _uiState.update {
+                            it.copy(
+                                progress = value,
+                                status = stage
+                            )
+                        }
                     }
-                }
+                )
 
                 withContext(Dispatchers.Main) {
                     _uiState.update {
